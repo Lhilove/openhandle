@@ -289,8 +289,9 @@ Features that cannot be exercised without credentials:
 
 ## What was verified, and what was not
 
-Verified locally against this repository's production compose stack (see the
-commit message for the exact commands):
+Verified locally by running this repository's production compose stack on a
+development machine, and by serving the built client through a local stand-in
+for the Vercel edge that applies `frontend/vercel.json` verbatim:
 
 * the image builds and starts as a non-root user; migrations apply; `db` and
   `api` report healthy;
@@ -301,7 +302,11 @@ commit message for the exact commands):
   `/healthz` open for the container probe;
 * the session cookie is `HttpOnly; Secure; SameSite=Lax`, host-only, and a
   register → `/me` → delete round trip works through the proxy;
-* `Cache-Control: no-store` on API responses.
+* `Cache-Control: no-store` on API responses;
+* the built client under the real CSP: the SPA fallback serves deep links such
+  as `/@handle` on a fresh load, no CSP violation is reported, and a sign-up in
+  a real browser through the proxy is still signed in after a full page reload
+  (the cookie is first-party).
 
 Not verified here: the Vercel half (the project was not deployable from this
 environment) and a **public** Let's Encrypt certificate, since the local run used
