@@ -1,0 +1,25 @@
+# Real environment files never get committed; the *.example templates do.
+.env
+.env.*
+!*.example
+
+# Keys and certificates
+*.pem
+*.key
+
+# Dependencies and build output
+node_modules/
+dist/
+frontend/dist/
+bin/
+backend/bin/
+backend/openhandle-api*
+*.exe
+coverage.out
+
+# Tooling / editor
+.freebuff/
+*.log
+.DS_Store
+.idea/
+.vscode/

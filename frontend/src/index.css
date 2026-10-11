@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Design tokens ----
+   Stored as space-separated RGB channels so Tailwind can apply opacity
+   modifiers (e.g. bg-accent/10). */
+:root {
+  --c-bg: 250 249 247; /* warm off-white */
+  --c-surface: 255 255 255;
+  --c-ink: 21 22 26; /* near-black */
+  --c-muted: 91 98 112; /* muted slate, sufficient contrast */
+  --c-accent: 109 76 246; /* restrained electric violet */
+  --c-accent-ink: 255 255 255;
+  --c-success: 20 128 74;
+  --c-warning: 180 83 9;
+  --c-danger: 180 35 24;
+  --c-line: 230 228 223;
+
+  --radius-card: 14px;
+  --radius-control: 10px;
+
+  --focus-ring: 2px solid rgb(var(--c-accent));
+}
+
+* {
+  border-color: rgb(var(--c-line));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: rgb(var(--c-bg));
+  color: rgb(var(--c-ink));
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Visible focus for keyboard users. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-card border border-line bg-surface shadow-soft;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-control px-4 py-2.5
+      text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-accent-ink hover:brightness-110;
+  }
+  .btn-secondary {
+    @apply btn border border-line bg-surface text-ink hover:bg-bg;
+  }
+  .btn-ghost {
+    @apply btn text-muted hover:text-ink;
+  }
+  .btn-danger {
+    @apply btn border border-line bg-surface text-danger hover:bg-bg;
+  }
+
+  .input {
+    @apply w-full rounded-control border border-line bg-surface px-3 py-2.5 text-sm
+      text-ink placeholder:text-muted;
+  }
+
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-ink;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-bg px-2.5 py-1
+      text-xs font-medium text-muted;
+  }
+  .badge-success {
+    @apply badge border-transparent bg-success/10 text-success;
+  }
+  .badge-warning {
+    @apply badge border-transparent bg-warning/10 text-warning;
+  }
+  .badge-danger {
+    @apply badge border-transparent bg-danger/10 text-danger;
+  }
+
+  .link {
+    @apply font-medium text-accent underline-offset-4 hover:underline;
+  }
+
+  .h1 {
+    @apply text-3xl font-semibold tracking-tight sm:text-4xl;
+  }
+  .h2 {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+  .muted {
+    @apply text-muted;
+  }
+}

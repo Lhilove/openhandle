@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16-alpine
+    # Dev-only container. The production stack (deploy/docker-compose.prod.yml)
+    # owns the openhandle-db/openhandle-api/openhandle-caddy names.
+    container_name: openhandle-dev-db
+    environment:
+      POSTGRES_USER: openhandle
+      POSTGRES_PASSWORD: openhandle
+      POSTGRES_DB: openhandle
+    ports:
+      # Host port is configurable to avoid clashing with other local services.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - openhandle-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openhandle -d openhandle"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  openhandle-pgdata:

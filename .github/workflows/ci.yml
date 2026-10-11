@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openhandle
+          POSTGRES_PASSWORD: openhandle
+          POSTGRES_DB: openhandle_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openhandle"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: tests (require PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgres://openhandle:openhandle@localhost:5432/openhandle_test?sslmode=disable
+        run: go test -count=1 ./...
+
+  frontend:
+    name: Frontend (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+
+      - name: vercel.json is valid JSON and has no placeholder left
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('vercel.json','utf8'))"
+          if grep -q '__API_ORIGIN__' vercel.json; then
+            echo "::warning::frontend/vercel.json still contains __API_ORIGIN__; /api/* will not be proxied"
+          fi
+
+  deploy-scripts:
+    name: Deploy scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shell syntax
+        run: |
+          for f in deploy/*.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+      - name: bootstrap dry run
+        run: DRY_RUN=1 bash deploy/bootstrap.sh --yes
+
+  image:
+    name: Production image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -f deploy/Dockerfile -t openhandle-api:ci .

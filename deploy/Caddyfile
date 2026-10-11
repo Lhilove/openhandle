@@ -1,0 +1,41 @@
+# Caddy configuration for the OpenHandle API origin.
+#
+# Caddy obtains and renews a publicly trusted certificate for API_DOMAIN
+# automatically over HTTP-01, which is why ports 80 and 443 must both be
+# reachable from the internet.
+#
+# Locally (docker compose up on your own machine) set API_DOMAIN=localhost and
+# Caddy issues a self-signed certificate from its local CA instead.
+#
+# Optional: to receive certificate expiry notices, add a global options block at
+# the top of this file with a real address. It must not be left empty -- an
+# empty `email` directive is a config error:
+#
+#   {
+#       email you@example.com
+#   }
+#
+# Then add ACME_EMAIL to the caddy service environment in docker-compose.prod.yml
+# and reference it here as {$ACME_EMAIL}.
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	# The API only accepts small JSON documents; cap the body so a large upload
+	# is rejected at the edge instead of tying up the origin.
+	request_body {
+		max_size 64KB
+	}
+
+	reverse_proxy api:8080 {
+		health_uri /healthz
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	# Access logs to stdout, so `docker compose logs caddy` shows them.
+	log {
+		output stdout
+		format json
+	}
+}
