@@ -135,6 +135,16 @@ func (c *client) register(email, password string) {
 	c.csrf = out.CSRFToken
 }
 
+// validSignature builds a distinct signature-shaped string: base58 over 64
+// bytes, which is the only thing a Solana RPC accepts.
+func validSignature(seed string) string {
+	b := make([]byte, 64)
+	for i := range b {
+		b[i] = seed[i%len(seed)]
+	}
+	return base58.Encode(b)
+}
+
 func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 	t.Helper()
 	var v T
@@ -368,7 +378,7 @@ func TestTransactionIdempotency(t *testing.T) {
 	sender.register("tx@example.com", "supersecret123")
 
 	body := map[string]string{
-		"signature":         "5VERYfakeSignatureForIdempotencyTest111111111111111111",
+		"signature":         validSignature("idempotency"),
 		"recipient_handle":  "receiver",
 		"amount_base_units": "1000000",
 		"asset":             "SOL",
@@ -404,12 +414,35 @@ func TestTransactionRejectsUnknownHandle(t *testing.T) {
 	s.register("tx2@example.com", "supersecret123")
 
 	rec := s.do(http.MethodPost, "/api/v1/transactions", map[string]string{
-		"signature":         "5fakeSignatureForUnknownHandleTest111111111111111111",
+		"signature":         validSignature("unknownhandle"),
 		"recipient_handle":  "doesnotexist",
 		"amount_base_units": "1000",
 	}, true)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for unknown recipient, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A malformed signature must never be stored: the status RPC rejects a whole
+// batch that contains one bad entry, so it would stall every pending payment.
+func TestTransactionRejectsMalformedSignature(t *testing.T) {
+	e := newEnv(t)
+	s := e.newClient()
+	s.register("tx3@example.com", "supersecret123")
+
+	for _, sig := range []string{
+		"5VERYfakeSignatureWithIllegalCharacters1111111111111111", // 'I', 'O', 'l', '0' are not base58
+		validSignature("short")[:40],                              // right alphabet, wrong size
+		"",
+	} {
+		rec := s.do(http.MethodPost, "/api/v1/transactions", map[string]string{
+			"signature":         sig,
+			"recipient_handle":  "anyone",
+			"amount_base_units": "1000",
+		}, true)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("signature %q: expected 400, got %d: %s", sig, rec.Code, rec.Body.String())
+		}
 	}
 }
 

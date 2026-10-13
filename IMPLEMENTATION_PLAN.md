@@ -74,6 +74,21 @@ frontend, Go + Gin + PostgreSQL backend) was adopted as-is.
       certificate (the local run used Caddy's internal CA). See
       `docs/DEPLOYMENT.md` for the two steps that exercise them.
 
+## Stage 9 — Payments that the network never accepts
+- [x] A signature the chain still cannot see after the blockhash window is
+      reported as `expired` ("Not sent") within ~3 minutes instead of sitting at
+      "Pending" for an hour. The record is re-checked slowly for a day, so a
+      transaction that lands late is still corrected to `confirmed`.
+- [x] The client confirms with the cluster after the wallet returns a signature
+      and refuses to record a payment whose blockhash already expired: no
+      phantom "pending" payment for a transfer that never happened.
+- [x] Signatures are validated as base58 64-byte values on ingest, and the
+      worker falls back to one-by-one status checks, so a single malformed
+      signature cannot stall confirmation for every pending payment.
+- [x] Tests: fake-RPC tests for the drop decision and the late-arrival recovery,
+      plus a rejection test for malformed signatures. Exercised end to end
+      against devnet and in a browser here.
+
 ## Documented limitations
 - Social login/verification is **not** faked. Without OAuth credentials the UI
   shows "Not configured"; no verified badge is ever shown without a real

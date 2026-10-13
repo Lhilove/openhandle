@@ -59,3 +59,17 @@ func IsValidSolanaAddress(s string) bool {
 	}
 	return len(b) == 32
 }
+
+// IsValidSignature verifies that s decodes to a 64-byte ed25519 signature, the
+// only shape a Solana RPC accepts.
+//
+// This matters beyond tidiness: the status RPC answers a whole batch with a
+// single "Invalid param: WrongSize" error, so one malformed signature stored in
+// the database would stall confirmation for every pending transaction.
+func IsValidSignature(s string) bool {
+	b, err := base58.Decode(strings.TrimSpace(s))
+	if err != nil {
+		return false
+	}
+	return len(b) == 64
+}

@@ -108,8 +108,11 @@ func (s *Server) CreateTransaction(c *gin.Context) {
 		return
 	}
 	sig := strings.TrimSpace(req.Signature)
-	if len(sig) < 32 || len(sig) > 200 {
-		httpx.Fail(c, http.StatusBadRequest, httpx.CodeTxInvalid, "A transaction signature is required.")
+	// The RPC rejects a whole status batch that contains one malformed signature,
+	// so a single junk value could stall confirmation for every pending payment.
+	// Only a 64-byte ed25519 signature is accepted.
+	if !validate.IsValidSignature(sig) {
+		httpx.Fail(c, http.StatusBadRequest, httpx.CodeTxInvalid, "That is not a valid Solana transaction signature.")
 		return
 	}
 	amount, err := strconv.ParseInt(strings.TrimSpace(req.AmountBaseUnits), 10, 64)
@@ -208,6 +211,21 @@ func (s *Server) verifyAgainstChain(ctx context.Context, signature, recipient st
 	return "mismatch", nil, nil
 }
 
+// statusesOneByOne is the fallback for a batch that the RPC rejected: it asks
+// about each signature separately and reports the ones it could not resolve as
+// "not found", so the caller applies the same drop logic to them.
+func (s *Server) statusesOneByOne(ctx context.Context, sigs []string) []rpc.Status {
+	out := make([]rpc.Status, len(sigs))
+	for i, sig := range sigs {
+		one, err := s.RPC.GetSignatureStatuses(ctx, []string{sig})
+		if err != nil || len(one) == 0 {
+			continue // Status{Found:false}
+		}
+		out[i] = one[0]
+	}
+	return out
+}
+
 // ListMyTransactions returns the caller's transaction history (scoped by owner).
 func (s *Server) ListMyTransactions(c *gin.Context) {
 	user, _ := httpx.CurrentUser(c)
@@ -264,6 +282,17 @@ func pageParams(c *gin.Context) (int, int) {
 	return limit, offset
 }
 
+// txDropTimeout is how long a submitted signature may stay invisible to the
+// chain before it is treated as dropped.
+//
+// A Solana blockhash is only valid for roughly 90 seconds, so a transaction the
+// network has still not seen after a few minutes will never confirm: it was
+// dropped before it landed and the sender's funds never left their wallet.
+// Reporting it as "submitted" for an hour, as the worker used to, misrepresents
+// a payment that never happened -- senders saw "Pending" for a transfer that no
+// node had ever accepted.
+const txDropTimeout = 3 * time.Minute
+
 // ConfirmPending polls the RPC for pending transactions and advances their
 // status. Called periodically by the background worker.
 func (s *Server) ConfirmPending(ctx context.Context) {
@@ -280,7 +309,10 @@ func (s *Server) ConfirmPending(ctx context.Context) {
 	}
 	statuses, err := s.RPC.GetSignatureStatuses(ctx, sigs)
 	if err != nil {
-		return
+		// One signature the RPC refuses (an older record written before
+		// signatures were validated, say) fails the whole call. Retry them one by
+		// one so it cannot stall confirmation for everything else.
+		statuses = s.statusesOneByOne(ctx, sigs)
 	}
 	for i, t := range pending {
 		if i >= len(statuses) {
@@ -289,8 +321,21 @@ func (s *Server) ConfirmPending(ctx context.Context) {
 		st := statuses[i]
 		switch {
 		case !st.Found:
-			// Not visible yet. Expire very old pending records conservatively.
-			if time.Since(t.SubmittedAt) > time.Hour {
+			// Still inside the blockhash window: the network may simply not have
+			// confirmed it yet, so leave the record pending.
+			if time.Since(t.SubmittedAt) < txDropTimeout {
+				continue
+			}
+			// The status index can lag or omit a signature the ledger does
+			// contain, so ask authoritatively before declaring the transfer lost.
+			amount, _ := strconv.ParseInt(t.AmountBaseUnits, 10, 64)
+			status, slot, _ := s.verifyAgainstChain(ctx, t.Signature, t.RecipientAddress, amount)
+			switch status {
+			case "confirmed":
+				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "confirmed", slot)
+			case "failed", "mismatch":
+				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "failed", slot)
+			default:
 				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "expired", nil)
 			}
 		case st.Err:

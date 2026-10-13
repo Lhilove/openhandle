@@ -244,7 +244,10 @@ CSP in `frontend/vercel.json`.
 
 ```bash
 cd /opt/openhandle                                   # or wherever you cloned it
-COMPOSE="docker compose -f deploy/docker-compose.prod.yml -p openhandle --env-file deploy/.env"
+# deploy/.env is root-only (it holds the secrets), so reading it -- and therefore
+# every command below -- needs sudo. bootstrap.sh also puts your user in the
+# docker group, so `docker ps` works unprivileged once you log in again.
+COMPOSE="sudo docker compose -f deploy/docker-compose.prod.yml -p openhandle --env-file deploy/.env"
 
 $COMPOSE ps                       # container and health status
 $COMPOSE logs -f api              # structured JSON logs, request_id on every line
@@ -253,12 +256,34 @@ $COMPOSE up -d --build            # after git pull
 $COMPOSE exec db psql -U openhandle -d openhandle
 ```
 
+### A payment that never confirms
+
+`GET /api/v1/me/transactions` reports each payment as `submitted`, `confirmed`,
+`failed` or `expired`. `expired` means the network never accepted the
+signature — the sender's wallet still holds the funds and the recipient received
+nothing. To check a specific one against the chain:
+
+```bash
+$COMPOSE exec db psql -U openhandle -d openhandle -c \
+  "SELECT signature, status, amount_base_units, submitted_at FROM transactions
+    WHERE status <> 'confirmed' ORDER BY submitted_at DESC LIMIT 10"
+
+# Is that signature on-chain at all?
+curl -s https://api.devnet.solana.com -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getSignatureStatuses","params":[["SIGNATURE"],{"searchTransactionHistory":true}]}'
+```
+
+A `null` entry means it never landed: the sender should send again (a fresh
+transaction is built every attempt, with a new blockhash). If the API says
+`submitted` for a signature `getTransaction` can see, the worker has not caught
+up yet — it re-checks every 15 seconds and corrects the record.
+
 * **Update:** `git pull && sudo bash deploy/bootstrap.sh --yes`, or the
   `$COMPOSE up -d --build` above.
 * **Backups:** `sudo bash deploy/backup.sh` writes a compressed dump to
-  `/var/backups/openhandle` and prunes old ones; see the header of that file for
-  a cron line. Copy dumps off the machine — a backup on the same disk is not a
-  backup.
+  `/var/backups/openhandle` and prunes old ones; it reads `deploy/.env` and runs
+  `docker exec`, so schedule it as root (see the header of that file for a cron
+  line). Copy dumps off the machine — a backup on the same disk is not a backup.
 * **Rollback:** `git checkout <previous-tag>` then `up -d --build`. Database
   migrations are forward-only; restore from a dump if you must go back.
 * **Certificates:** Caddy renews automatically. `$COMPOSE logs caddy` shows the

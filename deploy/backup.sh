@@ -4,8 +4,9 @@
 #
 #   sudo bash deploy/backup.sh [destination-dir]      # default /var/backups/openhandle
 #
-# Schedule it, e.g. nightly at 03:15:
-#   (crontab -l 2>/dev/null; echo '15 3 * * * cd /opt/openhandle && bash deploy/backup.sh >/var/log/openhandle-backup.log 2>&1') | crontab -
+# Schedule it as root, e.g. nightly at 03:15 -- it reads deploy/.env (mode 600,
+# root) and drives the docker socket, so it cannot run as an ordinary user:
+#   (sudo crontab -l 2>/dev/null; echo '15 3 * * * cd /opt/openhandle && bash deploy/backup.sh >>/var/log/openhandle-backup.log 2>&1') | sudo crontab -
 #
 # This keeps local copies only. A backup that lives on the same disk as the
 # database does not survive that disk: copy these files somewhere else

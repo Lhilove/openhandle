@@ -114,9 +114,18 @@ func (s *Store) UpdateTransactionStatus(ctx context.Context, id uuid.UUID, statu
 }
 
 // ListPendingTransactions returns transactions still awaiting confirmation.
+//
+// Besides freshly submitted rows it re-checks ones already marked expired, so a
+// transaction that the node had not seen but that landed afterwards is still
+// corrected. Those are polled slowly (every expiryRecheckInterval) because a
+// signature that never reached the network never will.
 func (s *Store) ListPendingTransactions(ctx context.Context, limit int) ([]models.Transaction, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT `+txCols+` FROM transactions WHERE status='submitted'
+		`SELECT `+txCols+` FROM transactions
+		 WHERE status='submitted'
+		    OR (status='expired'
+		        AND submitted_at > now() - interval '24 hours'
+		        AND (last_checked_at IS NULL OR last_checked_at < now() - interval '10 minutes'))
 		 ORDER BY submitted_at ASC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err

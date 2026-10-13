@@ -128,10 +128,28 @@ step_repo() {
   [ -f "$COMPOSE_FILE" ] || die "$COMPOSE_FILE not found in $REPO_DIR"
 }
 
+# ensure_docker_group lets the invoking user drive Docker without sudo, which is
+# what every command in docs/DEPLOYMENT.md and deploy/backup.sh assumes.
+# Without it `docker compose ps` answers "permission denied while trying to
+# connect to the docker API", which is a confusing dead end right after a
+# successful install. Group membership only takes effect on a new login.
+ensure_docker_group() {
+  local user="${SUDO_USER:-}"
+  [ -n "$user" ] || return 0
+  [ "$user" != "root" ] || return 0
+  if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    note "$user can already run docker"
+    return 0
+  fi
+  run usermod -aG docker "$user"
+  warn "$user was added to the docker group — log out and back in for it to take effect"
+}
+
 step_docker() {
   bold "3/8  Docker"
   if have docker && docker compose version >/dev/null 2>&1; then
     note "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo present) with the compose v2 plugin"
+    ensure_docker_group
     return
   fi
 
@@ -171,6 +189,8 @@ step_docker() {
     fi
     run sh -c 'curl -fsSL https://get.docker.com | sh'
   fi
+
+  ensure_docker_group
 }
 
 step_firewall() {
@@ -427,7 +447,9 @@ Health check:         curl -fsS https://$API_DOMAIN/healthz
      ./deploy/verify.sh $APP_BASE_URL
 
 Re-running this script is safe: it keeps existing secrets and just rebuilds.
-Logs:    cd $REPO_DIR && docker compose -f $COMPOSE_FILE -p $PROJECT_NAME logs -f
+Logs:    cd $REPO_DIR && sudo docker compose --env-file $ENV_FILE -f $COMPOSE_FILE -p $PROJECT_NAME logs -f
+         (deploy/$ENV_FILE is root-only, so these commands need sudo unless you
+          copy the values into your own environment)
 Update:  git pull && sudo bash deploy/bootstrap.sh --yes
 
 EOF

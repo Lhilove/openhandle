@@ -136,12 +136,23 @@ export function Field({
 
 /** Status chip for a transaction. */
 export function TxStatus({ status }: { status: string }) {
-  const map: Record<string, { kind: BadgeKind; label: string }> = {
+  const map: Record<string, { kind: BadgeKind; label: string; title?: string }> = {
     confirmed: { kind: "success", label: "Confirmed" },
     submitted: { kind: "warning", label: "Pending" },
     failed: { kind: "danger", label: "Failed" },
-    expired: { kind: "neutral", label: "Expired" },
+    // "expired" means the network never accepted the transaction, which is
+    // different from a transfer that failed: no funds moved at all. Say so,
+    // rather than leaving a sender to guess what "expired" means.
+    expired: {
+      kind: "neutral",
+      label: "Not sent",
+      title: "The network never accepted this transaction, so no funds left the sender's wallet.",
+    },
   };
   const entry = map[status] ?? { kind: "neutral" as BadgeKind, label: status };
-  return <Badge kind={entry.kind}>{entry.label}</Badge>;
+  return (
+    <span title={entry.title}>
+      <Badge kind={entry.kind}>{entry.label}</Badge>
+    </span>
+  );
 }

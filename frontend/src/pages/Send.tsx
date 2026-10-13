@@ -25,6 +25,7 @@ export default function Send() {
   const [amountError, setAmountError] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>("form");
   const [error, setError] = useState<string | null>(null);
+  const [dropped, setDropped] = useState<string | null>(null);
   const [tx, setTx] = useState<Tx | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -85,6 +86,7 @@ export default function Send() {
   async function signAndSend() {
     if (!recipient || !primaryWallet || lamports === null) return;
     setError(null);
+    setDropped(null);
     if (!wallet.connected) {
       setError("Connect a wallet to sign and send this payment.");
       return;
@@ -101,11 +103,26 @@ export default function Send() {
         );
       }
 
-      const sig = await wallet.sendSol(freshWallet.address, lamports);
-      setSignature(sig);
+      const outcome = await wallet.sendSol(freshWallet.address, lamports);
+      setSignature(outcome.signature);
+
+      if (outcome.landing === "dropped") {
+        // The network never accepted the transaction (its blockhash expired
+        // before a node took it). Nothing left the wallet and the recipient got
+        // nothing, so there is no payment to record -- recording one would put a
+        // payment that never happened into the history.
+        setSignature(null);
+        setStage("review");
+        setDropped(
+          `The ${SOLANA_CLUSTER} network never accepted that transaction, so no funds left your wallet and @${fresh.handle} received nothing. ` +
+            "This usually happens when the blockhash expires while the wallet approval is open, or when your wallet is connected to a different network than this app. " +
+            "Check that your wallet is on the same network, then sign again — a fresh transaction is built each time.",
+        );
+        return;
+      }
 
       const recorded = await api.createTransaction({
-        signature: sig,
+        signature: outcome.signature,
         recipient_handle: fresh.handle,
         amount_base_units: lamports.toString(),
         asset: "SOL",
@@ -119,7 +136,7 @@ export default function Send() {
       pollRef.current = window.setInterval(async () => {
         attempt += 1;
         try {
-          const latest = await api.getTransaction(sig);
+          const latest = await api.getTransaction(outcome.signature);
           setTx(latest);
           if (latest.status === "confirmed" || latest.status === "failed" || latest.status === "expired") {
             if (pollRef.current) window.clearInterval(pollRef.current);
@@ -158,6 +175,7 @@ export default function Send() {
       </Alert>
 
       {error ? <Alert kind="error">{error}</Alert> : null}
+      {dropped ? <Alert kind="warning">{dropped}</Alert> : null}
 
       {/* Step 1: recipient */}
       <form
@@ -315,13 +333,14 @@ export default function Send() {
                 : tx.status === "failed"
                   ? "Transaction failed"
                   : tx.status === "expired"
-                    ? "Not found before timeout"
+                    ? "Never reached the network"
                     : "Submitted — awaiting confirmation"}
             </span>
           </div>
           <p className="text-sm muted">
-            Status is read from the {SOLANA_CLUSTER} network, not from the browser. If it stays
-            pending, the network may simply be slow; your wallet also shows the final result.
+            {tx.status === "expired"
+              ? `${SOLANA_CLUSTER} never accepted this transaction, so no funds left your wallet and the recipient received nothing. A transaction that is not on the network within about 90 seconds will never be: its blockhash has expired. Send it again to build a fresh one.`
+              : `Status is read from the ${SOLANA_CLUSTER} network, not from the browser. If it stays pending, the network may simply be slow; your wallet also shows the final result.`}
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <code className="break-all font-mono text-xs">{signature}</code>
@@ -339,6 +358,19 @@ export default function Send() {
             <Link to="/app/payments" className="btn-secondary">
               Go to payments
             </Link>
+            {tx.status === "expired" ? (
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => {
+                  setTx(null);
+                  setSignature(null);
+                  setStage("review");
+                }}
+              >
+                Send again
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

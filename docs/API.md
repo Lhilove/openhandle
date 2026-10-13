@@ -127,9 +127,31 @@ The recipient is re-resolved from the handle; a client-supplied address is never
 trusted. When the RPC can already see the transaction, it is verified against the
 chain (recipient + lamports) and marked `confirmed`. Otherwise it is stored as
 `submitted` and confirmed by a background worker. Ingest is idempotent on
-`(network, signature)`.
+`(network, signature)`. `signature` must be a real base58 64-byte signature as
+returned by the wallet; anything else is rejected with `TRANSACTION_INVALID`,
+because the status RPC fails an entire batch that contains one malformed value.
 
-Statuses: `submitted`, `confirmed`, `failed`, `expired`.
+Statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `submitted` | accepted for tracking; the network has not confirmed it yet |
+| `confirmed` | on-chain and matched against the recorded recipient and amount |
+| `failed` | on-chain, but the transfer itself failed |
+| `expired` | the network never accepted it — **no funds moved** |
+
+`expired` is the one worth understanding. A Solana blockhash is only valid for
+about 90 seconds, so a signature the chain still has not seen after a few minutes
+was dropped before it landed: the sender's wallet still holds the funds and the
+recipient got nothing. The worker decides this roughly three minutes after
+submission (not an hour), because reporting a transfer that never happened as
+"pending" misrepresents it. A dropped transaction is not deleted — the attempt
+stays in the sender's history as `expired` — and it is still re-checked slowly for
+a day, so a transaction that does land late is corrected to `confirmed`.
+
+Because recording a dropped transaction as a payment would be a lie, the client
+also confirms with the cluster directly after the wallet returns a signature and
+does not register a payment at all when the blockhash expired.
 
 **Scope:** history covers transactions submitted through OpenHandle only.
 

@@ -16,6 +16,11 @@ import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.
 export const SOLANA_RPC_URL: string =
   (import.meta.env.VITE_SOLANA_RPC_URL as string | undefined) || "https://api.devnet.solana.com";
 
+// Upper bound on how long we wait for the cluster to confirm a submitted
+// transaction. A blockhash is valid for about 90 seconds, so by the time this
+// elapses the outcome is already decided and reporting it is safe.
+const CONFIRM_TIMEOUT_MS = 90_000;
+
 interface InjectedProvider {
   publicKey: PublicKey | null;
   isPhantom?: boolean;
@@ -65,6 +70,24 @@ function detectWallets(): DetectedWallet[] {
   return out;
 }
 
+export type TxLanding = "confirmed" | "failed" | "dropped" | "unknown";
+
+export interface SendOutcome {
+  signature: string;
+  /**
+   * What the cluster says happened to the transaction we just submitted.
+   *
+   * - confirmed: it is on-chain
+   * - failed: it landed but the transfer itself failed
+   * - dropped: the network never accepted it (the blockhash expired first), so
+   *   no funds moved and the sender can simply try again
+   * - unknown: we could not reach the cluster to find out; the API is then the
+   *   authority on the final status
+   */
+  landing: TxLanding;
+  detail?: string;
+}
+
 export interface WalletContextValue {
   available: { name: string }[];
   address: string | null;
@@ -77,7 +100,7 @@ export interface WalletContextValue {
   connect: (name?: string) => Promise<void>;
   disconnect: () => Promise<void>;
   signMessage: (message: string) => Promise<string>;
-  sendSol: (to: string, lamports: bigint) => Promise<string>;
+  sendSol: (to: string, lamports: bigint) => Promise<SendOutcome>;
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null);
@@ -148,7 +171,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   );
 
   const sendSol = useCallback(
-    async (to: string, lamports: bigint): Promise<string> => {
+    async (to: string, lamports: bigint): Promise<SendOutcome> => {
       if (!provider || !provider.publicKey) throw new Error("Connect a wallet before sending.");
       const tx = new Transaction().add(
         SystemProgram.transfer({
@@ -158,10 +181,43 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         }),
       );
       tx.feePayer = provider.publicKey;
-      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
       tx.recentBlockhash = blockhash;
       const { signature } = await provider.signAndSendTransaction(tx);
-      return signature;
+
+      // A signature from the wallet only means it was submitted. A transaction
+      // whose blockhash expires before a node accepts it is dropped: nothing
+      // lands, no funds move, and it stays invisible to the API forever. Ask the
+      // cluster directly so the sender learns that now instead of watching a
+      // "Pending" badge for an hour.
+      //
+      // The block-height strategy resolves once the status is seen, and throws
+      // TransactionExpiredBlockheightExceededError only when the block height
+      // passed without the signature ever appearing -- the decisive signal.
+      const settled = connection
+        .confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed")
+        .then((res) => ({ kind: "settled" as const, res }))
+        .catch((err: unknown) => ({ kind: "error" as const, err }));
+      const raced = await Promise.race([
+        settled,
+        new Promise<{ kind: "timeout" }>((resolve) =>
+          window.setTimeout(() => resolve({ kind: "timeout" }), CONFIRM_TIMEOUT_MS),
+        ),
+      ]);
+
+      if (raced.kind === "settled") {
+        return { signature, landing: raced.res.value.err ? "failed" : "confirmed" };
+      }
+      if (raced.kind === "timeout") {
+        return { signature, landing: "unknown", detail: "timed out waiting for the cluster" };
+      }
+      const detail = raced.err instanceof Error ? raced.err.message : String(raced.err);
+      // Expired block height is the one outcome we can call: the transaction is
+      // not on the ledger and never will be.
+      if (/block height exceeded|expired|BlockhashNotFound/i.test(detail)) {
+        return { signature, landing: "dropped", detail };
+      }
+      return { signature, landing: "unknown", detail };
     },
     [provider, connection],
   );
