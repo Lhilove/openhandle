@@ -28,6 +28,8 @@ export default function Send() {
   const [dropped, setDropped] = useState<string | null>(null);
   const [tx, setTx] = useState<Tx | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
+  // Mainnet moves real funds, so the sender has to say so explicitly.
+  const [riskAccepted, setRiskAccepted] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   const resolve = useCallback(async (handle: string) => {
@@ -164,14 +166,19 @@ export default function Send() {
         </p>
       </div>
 
-      <Alert kind="warning">
+      <Alert kind={wallet.cluster === "mainnet-beta" ? "error" : "warning"}>
         Blockchain transactions are generally irreversible. Network fees may apply and are paid by
         your wallet. Always confirm the recipient, network, asset and amount before signing.
-        {wallet.cluster !== "mainnet-beta" ? (
+        {wallet.cluster === "mainnet-beta" ? (
+          <span className="mt-1 block">
+            This deployment is on <strong>mainnet-beta</strong> — payments move <strong>real SOL</strong>{" "}
+            and cannot be refunded or reversed.
+          </span>
+        ) : (
           <span className="mt-1 block">
             This deployment is on <strong>{wallet.cluster}</strong> — test funds only.
           </span>
-        ) : null}
+        )}
       </Alert>
 
       {error ? <Alert kind="error">{error}</Alert> : null}
@@ -306,9 +313,31 @@ export default function Send() {
               </div>
             </div>
           ) : (
-            <button type="button" className="btn-primary" onClick={() => void signAndSend()} disabled={stage === "sending"}>
-              {stage === "sending" ? "Waiting for your wallet…" : "Sign and send"}
-            </button>
+            <div className="flex flex-col gap-3">
+              {wallet.cluster === "mainnet-beta" ? (
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={riskAccepted}
+                    onChange={(e) => setRiskAccepted(e.target.checked)}
+                    disabled={stage === "sending"}
+                  />
+                  <span>
+                    I understand this sends real SOL on Solana mainnet to the address above, and that
+                    it cannot be reversed.
+                  </span>
+                </label>
+              ) : null}
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => void signAndSend()}
+                disabled={stage === "sending" || (wallet.cluster === "mainnet-beta" && !riskAccepted)}
+              >
+                {stage === "sending" ? "Waiting for your wallet…" : "Sign and send"}
+              </button>
+            </div>
           )}
 
           <button

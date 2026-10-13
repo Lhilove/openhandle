@@ -55,6 +55,23 @@ type Config struct {
 	LogLevel string
 }
 
+// clusterForRPCHost infers which network an RPC endpoint belongs to from its
+// hostname, for the well-known public, Helius and Alchemy endpoints. It returns
+// "" when the endpoint is not one it recognises (a private node, a proxy), in
+// which case nothing can be asserted about it.
+func clusterForRPCHost(rawURL string) string {
+	host := strings.ToLower(rawURL)
+	switch {
+	case strings.Contains(host, "devnet"):
+		return "devnet"
+	case strings.Contains(host, "testnet"):
+		return "testnet"
+	case strings.Contains(host, "mainnet"):
+		return "mainnet-beta"
+	}
+	return ""
+}
+
 func getenv(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && strings.TrimSpace(v) != "" {
 		return strings.TrimSpace(v)
@@ -150,6 +167,17 @@ func Load() (*Config, error) {
 	case "devnet", "testnet", "mainnet-beta":
 	default:
 		return nil, fmt.Errorf("SOLANA_CLUSTER must be one of devnet, testnet, mainnet-beta (got %q)", c.SolanaCluster)
+	}
+
+	// A cluster label and an RPC endpoint on different networks is the worst
+	// possible misconfiguration: the API would publish "mainnet-beta" while
+	// reading status from devnet, so every real payment would be verified and
+	// confirmed against the wrong chain. Refuse to start instead.
+	//
+	// The URL is deliberately never echoed: provider endpoints carry an API key
+	// in the query string.
+	if want := clusterForRPCHost(c.SolanaRPCURL); want != "" && want != c.SolanaCluster {
+		return nil, fmt.Errorf("SOLANA_CLUSTER is %q but SOLANA_RPC_URL points at a %s endpoint; they must name the same network", c.SolanaCluster, want)
 	}
 
 	switch c.CookieSameSite {

@@ -202,7 +202,9 @@ Full walkthrough, configuration reference and troubleshooting:
   at a different domain needs `COOKIE_SAMESITE=none`, and Safari will then drop
   the session cookie entirely.
 - **Devnet by default.** `SOLANA_CLUSTER` must be set to `mainnet-beta`
-  explicitly; the UI labels the active cluster everywhere.
+  explicitly; the UI labels the active cluster everywhere, and the API refuses to
+  start if the label and the RPC host name different networks. On mainnet the
+  send form also requires an explicit "real SOL" acknowledgement before signing.
 - The frontend bundle includes `@solana/web3.js` (~570 KB); route-level code
   splitting is a future improvement.
 

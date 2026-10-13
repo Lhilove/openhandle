@@ -9,17 +9,17 @@ import {
 } from "react";
 import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 
+import { pollForLanding, type TxLanding } from "./confirm";
+
+// Re-exported for callers that describe an outcome without polling themselves.
+export type { TxLanding };
+
 // Wallet Standard-compatible connection: we detect injected providers (Phantom,
 // Solflare) that implement the standard connect/signMessage/signAndSendTransaction
 // surface. Private keys never leave the wallet.
 
 export const SOLANA_RPC_URL: string =
   (import.meta.env.VITE_SOLANA_RPC_URL as string | undefined) || "https://api.devnet.solana.com";
-
-// Upper bound on how long we wait for the cluster to confirm a submitted
-// transaction. A blockhash is valid for about 90 seconds, so by the time this
-// elapses the outcome is already decided and reporting it is safe.
-const CONFIRM_TIMEOUT_MS = 90_000;
 
 interface InjectedProvider {
   publicKey: PublicKey | null;
@@ -69,8 +69,6 @@ function detectWallets(): DetectedWallet[] {
   if (window.solflare) out.push({ name: "Solflare", provider: window.solflare });
   return out;
 }
-
-export type TxLanding = "confirmed" | "failed" | "dropped" | "unknown";
 
 export interface SendOutcome {
   signature: string;
@@ -185,39 +183,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       tx.recentBlockhash = blockhash;
       const { signature } = await provider.signAndSendTransaction(tx);
 
-      // A signature from the wallet only means it was submitted. A transaction
-      // whose blockhash expires before a node accepts it is dropped: nothing
-      // lands, no funds move, and it stays invisible to the API forever. Ask the
-      // cluster directly so the sender learns that now instead of watching a
-      // "Pending" badge for an hour.
-      //
-      // The block-height strategy resolves once the status is seen, and throws
-      // TransactionExpiredBlockheightExceededError only when the block height
-      // passed without the signature ever appearing -- the decisive signal.
-      const settled = connection
-        .confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed")
-        .then((res) => ({ kind: "settled" as const, res }))
-        .catch((err: unknown) => ({ kind: "error" as const, err }));
-      const raced = await Promise.race([
-        settled,
-        new Promise<{ kind: "timeout" }>((resolve) =>
-          window.setTimeout(() => resolve({ kind: "timeout" }), CONFIRM_TIMEOUT_MS),
-        ),
-      ]);
-
-      if (raced.kind === "settled") {
-        return { signature, landing: raced.res.value.err ? "failed" : "confirmed" };
-      }
-      if (raced.kind === "timeout") {
-        return { signature, landing: "unknown", detail: "timed out waiting for the cluster" };
-      }
-      const detail = raced.err instanceof Error ? raced.err.message : String(raced.err);
-      // Expired block height is the one outcome we can call: the transaction is
-      // not on the ledger and never will be.
-      if (/block height exceeded|expired|BlockhashNotFound/i.test(detail)) {
-        return { signature, landing: "dropped", detail };
-      }
-      return { signature, landing: "unknown", detail };
+      // A signature from the wallet only means it was submitted. Find out what
+      // the cluster actually did with it -- but only over HTTP, and never guess
+      // "lost" without the ledger agreeing.
+      const { landing, detail } = await pollForLanding(connection, signature, lastValidBlockHeight);
+      return { signature, landing, detail };
     },
     [provider, connection],
   );

@@ -114,6 +114,41 @@ func TestOriginSecretValidation(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsMismatchedSolanaClusterAndRPC locks in the mainnet-migration
+// guard: a cluster label and an RPC endpoint on different networks would make
+// the API publish one network while verifying payments against another.
+func TestLoadRejectsMismatchedSolanaClusterAndRPC(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("SOLANA_CLUSTER", "mainnet-beta")
+	// The endpoint carries a credential, so the failure must not echo it.
+	t.Setenv("SOLANA_RPC_URL", "https://devnet.helius-rpc.com/?api-key=secret-key-value")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected an error when SOLANA_CLUSTER and SOLANA_RPC_URL name different networks")
+	}
+	if strings.Contains(err.Error(), "secret-key-value") {
+		t.Fatalf("the error must not echo the RPC URL: %v", err)
+	}
+
+	// The same endpoint is accepted once both sides agree.
+	t.Setenv("SOLANA_RPC_URL", "https://mainnet.helius-rpc.com/?api-key=test")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a matching mainnet configuration must load: %v", err)
+	}
+	if cfg.SolanaCluster != "mainnet-beta" {
+		t.Fatalf("got cluster %q, want mainnet-beta", cfg.SolanaCluster)
+	}
+
+	// An endpoint that is not recognised says nothing about its network, so it is
+	// allowed (a private node or an internal proxy, for instance).
+	t.Setenv("SOLANA_RPC_URL", "https://rpc.internal.example/rpc")
+	if _, err := Load(); err != nil {
+		t.Fatalf("an unrecognised RPC host must be accepted: %v", err)
+	}
+}
+
 // TestLoadDefaultsAreSafe documents the default posture: same-site cookies and
 // no trust in a forwarded header.
 func TestLoadDefaultsAreSafe(t *testing.T) {

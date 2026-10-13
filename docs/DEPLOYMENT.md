@@ -236,9 +236,45 @@ Server (`deploy/.env`, see `deploy/.env.prod.example`):
 
 Frontend (build-time, public — never secrets): `VITE_API_BASE_URL`,
 `VITE_SOLANA_CLUSTER`, `VITE_SOLANA_RPC_URL`. Leave `VITE_API_BASE_URL` unset to
-use the same-origin proxy; set it only if you deliberately go cross-site. If you
-change `VITE_SOLANA_RPC_URL`, add that origin to the `connect-src` list in the
-CSP in `frontend/vercel.json`.
+use the same-origin proxy; set it only if you deliberately go cross-site.
+
+If you change `VITE_SOLANA_RPC_URL`, add that origin to the `connect-src` list in
+the CSP in `frontend/vercel.json` — as **both** `https://` and `wss://`. Missing
+the `wss://` entry does not break page loads or any HTTP call, so it is easy to
+overlook; the client's confirmation path no longer needs a socket, but wallet
+adapters and future subscriptions do.
+
+These are Vite build-time variables: they are inlined into the bundle, so after
+changing them in the Vercel dashboard you must **redeploy** before the browser
+sees the new values.
+
+## Switching to mainnet
+
+Mainnet is a configuration change, not a code change — but make it in all four
+places, or the pieces disagree with each other:
+
+1. **Server** (`deploy/.env`): set `SOLANA_CLUSTER=mainnet-beta` and
+   `SOLANA_RPC_URL` to a mainnet endpoint, then `$COMPOSE up -d --build`. The API
+   refuses to start if the label and a recognised RPC host name different
+   networks; it never echoes the URL, which may contain an API key.
+2. **Vercel** (project environment variables): set `VITE_SOLANA_CLUSTER=mainnet-beta`
+   and `VITE_SOLANA_RPC_URL` to the browser endpoint, then redeploy.
+3. **CSP**: allow the new RPC host (https and wss) in `frontend/vercel.json`.
+4. **Wallet**: the wallets you verified on devnet are the *same addresses* on
+   mainnet (a key pair has no network), but their on-chain history is not —
+   devnet balances and devnet transactions do not carry over.
+
+Verify, from a browser on the deployed app:
+
+- the header badge and the send form both read `mainnet-beta`;
+- a payment shows in `/app/payments` and settles to `confirmed`;
+- the API's own scope line says `Transactions submitted through OpenHandle on
+  mainnet-beta only.`
+
+Before you flip it: the API's `expired`/`submitted` reconciliation window is 3
+minutes, so a payment the chain never accepted stops looking pending quickly.
+On mainnet that matters more, because the labels are the only signal the sender
+gets — the funds are real.
 
 ## Operating the stack
 
