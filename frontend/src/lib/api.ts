@@ -140,6 +140,11 @@ export interface Tx {
   slot: number | null;
   submitted_at: string;
   confirmed_at: string | null;
+  /** Which side of the payment the signed-in account is on. */
+  direction: "sent" | "received";
+  /** The other party's public handle, when it is public and active. */
+  counterparty_handle: string | null;
+  counterparty_address: string;
 }
 
 export interface TransactionList {

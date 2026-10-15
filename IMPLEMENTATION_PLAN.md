@@ -89,12 +89,42 @@ frontend, Go + Gin + PostgreSQL backend) was adopted as-is.
       plus a rejection test for malformed signatures. Exercised end to end
       against devnet and in a browser here.
 
+## Stage 10 — One payment, two sides, one status
+- [x] A payment is visible to both parties. History was scoped to the account
+      that submitted the transaction, so a recipient had **no record of a tip at
+      all**: the delivery was invisible to the person who was paid even though
+      the sender's history showed it. `/api/v1/me/transactions` now returns the
+      payments a user sent *and* the ones paid to them, on one timeline, each
+      with `direction` and the counterparty (handle when public, address
+      always). `GET /api/v1/transactions/{signature}` is readable by either
+      party. One row, two views: the sides cannot report different statuses.
+- [x] An unreachable RPC endpoint no longer becomes a chain verdict. The old
+      worker discarded the error from its chain lookup and fell through to
+      `expired`, so a provider outage (a rejected API key answers `401`)
+      reported a payment that had **already finalized on mainnet** as
+      "Not sent" — telling the sender their money had never left the wallet.
+      A response the endpoint never gave is now `unknown`, not `missing`: the
+      record stays `submitted` and is re-checked (`GET /readyz` reports
+      `"rpc": false`, the worker logs why). Verified against a real finalized
+      mainnet payment that had been reported `expired`.
+- [x] Expired records are re-checked for a week rather than a day, so a wrong
+      verdict heals by itself once the endpoint recovers.
+- [x] Tests: an endpoint that answers with `401` leaves records pending; a
+      failed chain lookup past the blockhash window does not become `expired`
+      (this test fails against the old code with exactly the reported symptom);
+      sent and received history, attribution by wallet address, and no leak of a
+      counterparty handle its owner has hidden.
+
 ## Documented limitations
 - Social login/verification is **not** faked. Without OAuth credentials the UI
   shows "Not configured"; no verified badge is ever shown without a real
   provider verification.
 - Balance display is intentionally **omitted** (no reliable balance indexer
   wired). The dashboard does not render a balance as if verified.
-- Transaction history covers only transactions **submitted through OpenHandle**;
-  it is not an exhaustive on-chain history.
+- Transaction history covers the payments **sent and received through
+  OpenHandle**; it is not an exhaustive on-chain history, so a transfer made
+  outside OpenHandle does not appear.
+- Confirmation requires a reachable RPC endpoint. While `/readyz` reports
+  `"rpc": false` nothing is confirmed and payments stay `submitted` — honest, but
+  not final until the endpoint works again.
 - Devnet is the default cluster. Mainnet must be opted into explicitly.

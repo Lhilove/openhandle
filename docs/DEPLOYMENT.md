@@ -268,8 +268,11 @@ Verify, from a browser on the deployed app:
 
 - the header badge and the send form both read `mainnet-beta`;
 - a payment shows in `/app/payments` and settles to `confirmed`;
-- the API's own scope line says `Transactions submitted through OpenHandle on
-  mainnet-beta only.`
+- the API's own scope line says `Payments sent and received through OpenHandle on
+  mainnet-beta only; it is not a full view of your wallet's on-chain activity.`
+- `GET /readyz` returns `"rpc": true`. **Do this before taking any payment**: with
+  `"rpc": false` the API cannot confirm anything, so every payment stays
+  `submitted` (never `confirmed`) until the endpoint works again.
 
 Before you flip it: the API's `expired`/`submitted` reconciliation window is 3
 minutes, so a payment the chain never accepted stops looking pending quickly.
@@ -292,6 +295,37 @@ $COMPOSE up -d --build            # after git pull
 $COMPOSE exec db psql -U openhandle -d openhandle
 ```
 
+### The RPC endpoint is unreachable (`"rpc": false`)
+
+```bash
+curl -s http://127.0.0.1:8081/readyz      # {"db":true,"rpc":false,...}
+$COMPOSE logs --since 10m api | grep "rpc cannot be reached"
+```
+
+Every payment then sits at `submitted`, and none is ever confirmed. Failures are
+never converted into a verdict, so nothing is wrongly labelled `expired` or
+`failed` in the meantime — but nothing is confirmed either, and no history can be
+reconciled until the endpoint answers again.
+
+A provider rejects a request whose key is missing, expired or wrong with
+`401 Unauthorized`. Test the configured endpoint without printing the key:
+
+```bash
+sudo docker exec openhandle-api printenv SOLANA_RPC_URL > /tmp/rpc.url
+chmod 600 /tmp/rpc.url
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' "$(cat /tmp/rpc.url)"
+rm -f /tmp/rpc.url
+```
+
+`200` means the endpoint is fine and the failure is transient. `401`/`403` means
+the credential is the problem: rotate the key with the provider, update
+`SOLANA_RPC_URL` in `deploy/.env` (`$COMPOSE up -d --force-recreate api` to pick
+it up), and confirm `/readyz` flips to `"rpc": true` before anyone pays. The
+cluster in `SOLANA_RPC_URL` must match `SOLANA_CLUSTER` — the API refuses to
+start otherwise, since verifying mainnet payments against devnet would be worse
+than not starting at all.
+
 ### A payment that never confirms
 
 `GET /api/v1/me/transactions` reports each payment as `submitted`, `confirmed`,
@@ -312,7 +346,16 @@ curl -s https://api.devnet.solana.com -H 'Content-Type: application/json' \
 A `null` entry means it never landed: the sender should send again (a fresh
 transaction is built every attempt, with a new blockhash). If the API says
 `submitted` for a signature `getTransaction` can see, the worker has not caught
-up yet — it re-checks every 15 seconds and corrects the record.
+up yet — it re-checks every 15 seconds and corrects the record. A record the API
+labelled `expired` that the chain does contain is corrected too: expired records
+are re-checked for a week, so a wrong verdict heals on its own.
+
+A recipient who is missing a payment they were sent should not need to be told
+"it is not in our history": `GET /api/v1/me/transactions` lists the payments a
+user sent *and* the ones paid to them. If an incoming payment is missing from a
+recipient's history, check that the row's `recipient_address` is an address in
+their `wallets`, or that `recipient_handle_id` points at a handle they own —
+those are the two links that attribute a payment to the account that was paid.
 
 * **Update:** `git pull && sudo bash deploy/bootstrap.sh --yes`, or the
   `$COMPOSE up -d --build` above.

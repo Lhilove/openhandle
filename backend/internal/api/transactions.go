@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"openhandle/internal/httpx"
 	"openhandle/internal/models"
@@ -29,6 +30,12 @@ type txDTO struct {
 	Slot             *int64     `json:"slot"`
 	SubmittedAt      time.Time  `json:"submitted_at"`
 	ConfirmedAt      *time.Time `json:"confirmed_at"`
+	// Direction is "sent" or "received" from the caller's point of view.
+	Direction string `json:"direction"`
+	// Counterparty is the other side of the payment, for display: the recipient
+	// on a payment the caller sent, the sender on one they received.
+	CounterpartyHandle  *string `json:"counterparty_handle"`
+	CounterpartyAddress string  `json:"counterparty_address"`
 }
 
 func toTxDTO(t models.Transaction) txDTO {
@@ -45,6 +52,14 @@ func toTxDTO(t models.Transaction) txDTO {
 		SubmittedAt:      t.SubmittedAt,
 		ConfirmedAt:      t.ConfirmedAt,
 	}
+}
+
+func toPaymentDTO(p models.Payment) txDTO {
+	d := toTxDTO(p.Transaction)
+	d.Direction = p.Direction
+	d.CounterpartyHandle = p.CounterpartyHandle
+	d.CounterpartyAddress = p.CounterpartyAddress
+	return d
 }
 
 // resolveRecipientWallet finds the public payment address for a handle.
@@ -143,6 +158,14 @@ func (s *Server) CreateTransaction(c *gin.Context) {
 		sender = &req.SenderAddress
 	}
 
+	// Record who sent it as well as who received it. The recipient's history
+	// shows a payment the sender's client created, so the sender's handle has to
+	// be stored with it: without it the recipient sees an anonymous address.
+	var senderHandleID *uuid.UUID
+	if sh, err := s.Store.GetActiveHandleForUser(ctx, user.ID); err == nil && sh != nil {
+		senderHandleID = &sh.ID
+	}
+
 	tx := models.Transaction{
 		Network:           network,
 		Signature:         sig,
@@ -152,6 +175,7 @@ func (s *Server) CreateTransaction(c *gin.Context) {
 		AssetIdentifier:   asset,
 		Status:            "submitted",
 		CreatedByUserID:   &user.ID,
+		SenderHandleID:    senderHandleID,
 		RecipientHandleID: &h.ID,
 	}
 
@@ -212,47 +236,79 @@ func (s *Server) verifyAgainstChain(ctx context.Context, signature, recipient st
 }
 
 // statusesOneByOne is the fallback for a batch that the RPC rejected: it asks
-// about each signature separately and reports the ones it could not resolve as
-// "not found", so the caller applies the same drop logic to them.
+// about each signature separately so one bad signature cannot hide the rest.
+//
+// A signature the endpoint failed to answer is reported as unavailable, not as
+// missing. Only an answer the endpoint actually gave is evidence about the
+// chain.
 func (s *Server) statusesOneByOne(ctx context.Context, sigs []string) []rpc.Status {
 	out := make([]rpc.Status, len(sigs))
 	for i, sig := range sigs {
 		one, err := s.RPC.GetSignatureStatuses(ctx, []string{sig})
 		if err != nil || len(one) == 0 {
-			continue // Status{Found:false}
+			out[i] = rpc.Status{Unavailable: true}
+			continue
 		}
 		out[i] = one[0]
 	}
 	return out
 }
 
-// ListMyTransactions returns the caller's transaction history (scoped by owner).
+// allUnavailable reports whether the endpoint failed to answer for every
+// signature, which means the batch produced no information at all.
+func allUnavailable(statuses []rpc.Status) bool {
+	if len(statuses) == 0 {
+		return false
+	}
+	for _, st := range statuses {
+		if !st.Unavailable {
+			return false
+		}
+	}
+	return true
+}
+
+// ListMyTransactions returns the caller's payments: the ones they sent and the
+// ones they received, on one timeline.
 func (s *Server) ListMyTransactions(c *gin.Context) {
 	user, _ := httpx.CurrentUser(c)
 	limit, offset := pageParams(c)
 
-	txs, total, err := s.Store.ListUserTransactions(c.Request.Context(), user.ID, limit, offset)
+	payments, total, err := s.Store.ListUserTransactions(c.Request.Context(), user.ID, limit, offset)
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, httpx.CodeInternal, "Could not load transactions.")
 		return
 	}
-	out := make([]txDTO, 0, len(txs))
-	for _, t := range txs {
-		out = append(out, toTxDTO(t))
+	out := make([]txDTO, 0, len(payments))
+	for _, p := range payments {
+		out = append(out, toPaymentDTO(p))
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"transactions": out,
 		"total":        total,
 		"limit":        limit,
 		"offset":       offset,
-		"scope":        "Transactions submitted through OpenHandle on " + s.Cfg.SolanaCluster + " only.",
+		"scope": "Payments sent and received through OpenHandle on " + s.Cfg.SolanaCluster +
+			" only; it is not a full view of your wallet's on-chain activity.",
 	})
 }
 
-// GetTransaction returns one transaction owned by the caller.
+// GetTransaction returns one payment the caller is party to: the sender who
+// submitted it, or the recipient whose funds arrived.
 func (s *Server) GetTransaction(c *gin.Context) {
 	user, _ := httpx.CurrentUser(c)
 	sig := c.Param("signature")
+
+	visible, err := s.Store.TransactionVisibleTo(c.Request.Context(), user.ID, s.Cfg.SolanaCluster, sig)
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, httpx.CodeInternal, "Could not load the transaction.")
+		return
+	}
+	if !visible {
+		// Do not reveal whether a transaction the caller is not party to exists.
+		httpx.Fail(c, http.StatusNotFound, httpx.CodeNotFound, "Transaction not found.")
+		return
+	}
 	tx, err := s.Store.GetTransactionBySignature(c.Request.Context(), s.Cfg.SolanaCluster, sig)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -260,11 +316,6 @@ func (s *Server) GetTransaction(c *gin.Context) {
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, httpx.CodeInternal, "Could not load the transaction.")
-		return
-	}
-	if tx.CreatedByUserID == nil || *tx.CreatedByUserID != user.ID {
-		// Do not reveal whether another user's transaction exists.
-		httpx.Fail(c, http.StatusNotFound, httpx.CodeNotFound, "Transaction not found.")
 		return
 	}
 	c.JSON(http.StatusOK, toTxDTO(*tx))
@@ -295,12 +346,24 @@ const txDropTimeout = 3 * time.Minute
 
 // ConfirmPending polls the RPC for pending transactions and advances their
 // status. Called periodically by the background worker.
+//
+// The rule this worker must never break: an endpoint that cannot answer says
+// nothing about a transaction. A provider outage -- a rejected credential, a
+// rate limit, a timeout -- is not evidence that the network dropped a transfer.
+// Treating it as one marked a payment that had already finalized as "Not sent",
+// which is the worst outcome of all: the sender is told their money never left
+// when it did. So every verdict below is written only from a reply the endpoint
+// actually gave; anything else leaves the record pending for the next tick.
 func (s *Server) ConfirmPending(ctx context.Context) {
 	if s.RPC == nil {
 		return
 	}
 	pending, err := s.Store.ListPendingTransactions(ctx, 50)
-	if err != nil || len(pending) == 0 {
+	if err != nil {
+		s.Log.Warn("list pending transactions", "err", err)
+		return
+	}
+	if len(pending) == 0 {
 		return
 	}
 	sigs := make([]string, len(pending))
@@ -311,49 +374,93 @@ func (s *Server) ConfirmPending(ctx context.Context) {
 	if err != nil {
 		// One signature the RPC refuses (an older record written before
 		// signatures were validated, say) fails the whole call. Retry them one by
-		// one so it cannot stall confirmation for everything else.
+		// one so it cannot stall confirmation for everything else -- but a call
+		// that failed for every signature leaves all of them pending.
 		statuses = s.statusesOneByOne(ctx, sigs)
+		if allUnavailable(statuses) {
+			s.Log.Warn("rpc cannot be reached; transactions left pending",
+				"err", err, "pending", len(pending))
+			return
+		}
 	}
 	for i, t := range pending {
 		if i >= len(statuses) {
 			break
 		}
-		st := statuses[i]
-		switch {
-		case !st.Found:
-			// Still inside the blockhash window: the network may simply not have
-			// confirmed it yet, so leave the record pending.
-			if time.Since(t.SubmittedAt) < txDropTimeout {
-				continue
-			}
-			// The status index can lag or omit a signature the ledger does
-			// contain, so ask authoritatively before declaring the transfer lost.
-			amount, _ := strconv.ParseInt(t.AmountBaseUnits, 10, 64)
-			status, slot, _ := s.verifyAgainstChain(ctx, t.Signature, t.RecipientAddress, amount)
-			switch status {
-			case "confirmed":
-				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "confirmed", slot)
-			case "failed", "mismatch":
-				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "failed", slot)
-			default:
-				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "expired", nil)
-			}
-		case st.Err:
-			_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "failed", &st.Slot)
-		case st.ConfirmationStatus == rpc.StatusConfirmed || st.ConfirmationStatus == rpc.StatusFinalized:
-			// Re-verify the recorded details against the chain before confirming.
-			amount, _ := strconv.ParseInt(t.AmountBaseUnits, 10, 64)
-			status, slot, _ := s.verifyAgainstChain(ctx, t.Signature, t.RecipientAddress, amount)
-			switch status {
-			case "confirmed":
-				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "confirmed", slot)
-			case "failed", "mismatch":
-				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "failed", slot)
-			default:
-				_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "confirmed", &st.Slot)
-			}
-		default:
-			_ = s.Store.UpdateTransactionStatus(ctx, t.ID, "submitted", &st.Slot)
+		s.applyChainStatus(ctx, t, statuses[i])
+	}
+}
+
+// applyChainStatus advances one record from a single endpoint reply.
+func (s *Server) applyChainStatus(ctx context.Context, t models.Transaction, st rpc.Status) {
+	switch {
+	case st.Unavailable:
+		// We learned nothing. Try again on the next tick.
+		return
+	case !st.Found:
+		// Still inside the blockhash window: the network may simply not have
+		// confirmed it yet, so leave the record pending.
+		if time.Since(t.SubmittedAt) < txDropTimeout {
+			return
 		}
+		// The status index can lag or omit a signature the ledger does contain,
+		// so ask authoritatively before declaring the transfer lost.
+		amount, _ := strconv.ParseInt(t.AmountBaseUnits, 10, 64)
+		status, slot, verr := s.verifyAgainstChain(ctx, t.Signature, t.RecipientAddress, amount)
+		if verr != nil {
+			// The lookup failed, so the chain was never actually asked. Hold the
+			// record pending rather than calling a real payment lost.
+			s.Log.Warn("transaction status deferred: rpc lookup failed",
+				"signature", t.Signature, "err", verr)
+			return
+		}
+		switch status {
+		case "confirmed":
+			s.setTxStatus(ctx, t, "confirmed", slot)
+		case "failed", "mismatch":
+			s.setTxStatus(ctx, t, "failed", slot)
+		default:
+			// The endpoint looked for the transaction and could not find it, past
+			// the blockhash window: it will never land.
+			s.setTxStatus(ctx, t, "expired", nil)
+		}
+	case st.Err:
+		s.setTxStatus(ctx, t, "failed", &st.Slot)
+	case st.ConfirmationStatus == rpc.StatusConfirmed || st.ConfirmationStatus == rpc.StatusFinalized:
+		// Re-verify the recorded details against the chain before confirming.
+		amount, _ := strconv.ParseInt(t.AmountBaseUnits, 10, 64)
+		status, slot, verr := s.verifyAgainstChain(ctx, t.Signature, t.RecipientAddress, amount)
+		if verr != nil {
+			// The index already saw the transaction, which is enough to confirm
+			// it; a failed detail lookup must not hold a landed payment pending.
+			s.setTxStatus(ctx, t, "confirmed", &st.Slot)
+			return
+		}
+		switch status {
+		case "confirmed":
+			if slot == nil {
+				slot = &st.Slot
+			}
+			s.setTxStatus(ctx, t, "confirmed", slot)
+		case "failed", "mismatch":
+			s.setTxStatus(ctx, t, "failed", slot)
+		default:
+			s.setTxStatus(ctx, t, "confirmed", &st.Slot)
+		}
+	default:
+		s.setTxStatus(ctx, t, "submitted", &st.Slot)
+	}
+}
+
+// setTxStatus persists a status change and records it. Nothing here fabricates a
+// verdict: the caller only reaches it with an answer from the chain.
+func (s *Server) setTxStatus(ctx context.Context, t models.Transaction, status string, slot *int64) {
+	if err := s.Store.UpdateTransactionStatus(ctx, t.ID, status, slot); err != nil {
+		s.Log.Error("update transaction status", "signature", t.Signature, "status", status, "err", err)
+		return
+	}
+	if status != "submitted" && status != t.Status {
+		s.Log.Info("transaction status", "signature", t.Signature, "network", t.Network,
+			"from", t.Status, "to", status)
 	}
 }

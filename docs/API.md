@@ -107,8 +107,8 @@ domain, address and user. Signatures are verified server-side with ed25519.
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | POST | `/api/v1/transactions` | cookie+CSRF | record a submitted transfer |
-| GET | `/api/v1/me/transactions?limit=&offset=` | cookie | owner's history |
-| GET | `/api/v1/transactions/{signature}` | cookie | owner-only |
+| GET | `/api/v1/me/transactions?limit=&offset=` | cookie | sent and received, newest first |
+| GET | `/api/v1/transactions/{signature}` | cookie | readable by either party |
 
 Request body:
 
@@ -147,13 +147,30 @@ recipient got nothing. The worker decides this roughly three minutes after
 submission (not an hour), because reporting a transfer that never happened as
 "pending" misrepresents it. A dropped transaction is not deleted — the attempt
 stays in the sender's history as `expired` — and it is still re-checked slowly for
-a day, so a transaction that does land late is corrected to `confirmed`.
+a week, so a transaction that does land late is corrected to `confirmed`.
+
+The rule the worker must never break: **an RPC endpoint that cannot answer says
+nothing about a transaction.** A verdict (`confirmed`, `failed`, `expired`) is
+only ever written from a reply the endpoint actually gave. A rejected credential,
+a rate limit, a timeout or a short batch leaves the record `submitted` — pending,
+and re-checked — instead of inventing an outcome. `GET /readyz` reports
+`"rpc": false` when the endpoint cannot be reached, and the API logs
+`rpc cannot be reached; transactions left pending` on every worker tick while it
+stays that way. An endpoint that is down therefore looks like a slow network, not
+like a lost payment.
 
 Because recording a dropped transaction as a payment would be a lie, the client
 also confirms with the cluster directly after the wallet returns a signature and
 does not register a payment at all when the blockhash expired.
 
-**Scope:** history covers transactions submitted through OpenHandle only.
+**Scope:** history covers payments sent *and* received through OpenHandle, on a
+single timeline, because a payment has two sides and both of them need to see it.
+Each row carries `direction` (`sent` or `received`) and the counterparty for
+display: `counterparty_handle` when that handle is public and active (a hidden
+handle is never exposed, not even to the person who paid it) and
+`counterparty_address` always. Both sides read the same record, so they can never
+report a different status for the same payment. It is still not a full view of a
+wallet's on-chain activity: a transfer made outside OpenHandle is not recorded.
 
 ## Identities
 

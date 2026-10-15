@@ -63,6 +63,24 @@ type Transaction struct {
 	CreatedAt         time.Time
 }
 
+// Direction describes which side of a payment the viewer is on.
+const (
+	DirectionSent     = "sent"
+	DirectionReceived = "received"
+)
+
+// Payment is a transaction seen from one user's side, with the counterparty
+// resolved for display. A payment has two sides and each side sees the same
+// record, so a sender and a recipient can never disagree about its status.
+type Payment struct {
+	Transaction
+	Direction string
+	// CounterpartyHandle is the other side's handle, present only when that
+	// handle is public and still active. The address is always present.
+	CounterpartyHandle  *string
+	CounterpartyAddress string
+}
+
 // IdentityConnection is a verified link to an external account. Only stored
 // after a real provider verification; tokens are not retained.
 type IdentityConnection struct {

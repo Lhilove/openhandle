@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, SOLANA_CLUSTER, type TransactionList } from "../lib/api";
-import { Alert, EmptyState, Skeleton, TxStatus } from "../components/ui";
+import { Alert, Badge, EmptyState, Skeleton, TxStatus } from "../components/ui";
 import { formatDate, lamportsToSol, shortenAddress } from "../lib/format";
 
 const PAGE = 10;
@@ -43,7 +43,7 @@ export default function Payments() {
         <div>
           <h1 className="h2">Payments</h1>
           <p className="mt-1 text-sm muted">
-            {data?.scope ?? `Transactions submitted through OpenHandle on ${SOLANA_CLUSTER}.`}
+            {data?.scope ?? `Payments sent and received through OpenHandle on ${SOLANA_CLUSTER}.`}
           </p>
         </div>
         <Link to="/app/send" className="btn-primary">
@@ -62,51 +62,71 @@ export default function Payments() {
 
       {data && data.transactions.length === 0 && !loading ? (
         <EmptyState title="No payments yet">
-          History lists only transactions submitted through OpenHandle. It is not a full view of your
-          wallet's on-chain activity.
+          History lists the payments you sent and received through OpenHandle. It is not a full view
+          of your wallet's on-chain activity.
         </EmptyState>
       ) : null}
 
       {data && data.transactions.length > 0 ? (
-        <div className="overflow-hidden card">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Payment history</caption>
-            <thead className="bg-bg text-left text-xs uppercase tracking-wide muted">
-              <tr>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Amount</th>
-                <th className="px-4 py-3 font-medium">Recipient</th>
-                <th className="px-4 py-3 font-medium">Submitted</th>
-                <th className="px-4 py-3 font-medium">Signature</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {data.transactions.map((tx) => (
-                <tr key={tx.id}>
-                  <td className="px-4 py-3">
-                    <TxStatus status={tx.status} />
-                  </td>
-                  <td className="px-4 py-3 font-medium">
-                    {tx.asset_identifier === "SOL"
-                      ? `${lamportsToSol(tx.amount_base_units)} SOL`
-                      : `${tx.amount_base_units} ${tx.asset_identifier}`}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">{shortenAddress(tx.recipient_address, 6)}</td>
-                  <td className="px-4 py-3 text-xs muted">{formatDate(tx.submitted_at)}</td>
-                  <td className="px-4 py-3">
-                    <a
-                      className="link font-mono text-xs"
-                      href={explorerUrl(tx.signature)}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                    >
-                      {shortenAddress(tx.signature, 6)}
-                    </a>
-                  </td>
+        // The table is wider than a phone. Scroll it rather than clipping the
+        // columns off the edge, where they cannot be reached at all.
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <caption className="sr-only">Payments sent and received</caption>
+              <thead className="bg-bg text-left text-xs uppercase tracking-wide muted">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Status</th>
+                  <th className="px-4 py-3 font-medium">Amount</th>
+                  <th className="px-4 py-3 font-medium">Sent / received</th>
+                  <th className="px-4 py-3 font-medium">Counterparty</th>
+                  <th className="px-4 py-3 font-medium">Submitted</th>
+                  <th className="px-4 py-3 font-medium">Signature</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {data.transactions.map((tx) => {
+                  const inbound = tx.direction === "received";
+                  return (
+                    <tr key={tx.id}>
+                      <td className="px-4 py-3">
+                        <TxStatus status={tx.status} />
+                      </td>
+                      <td className="px-4 py-3 font-medium">
+                        {tx.asset_identifier === "SOL"
+                          ? `${lamportsToSol(tx.amount_base_units)} SOL`
+                          : `${tx.amount_base_units} ${tx.asset_identifier}`}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge kind={inbound ? "success" : "neutral"}>
+                          {inbound ? "Received" : "Sent"}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs muted">{inbound ? "From " : "To "}</span>
+                        <span className="font-mono text-xs">
+                          {tx.counterparty_handle
+                            ? `@${tx.counterparty_handle}`
+                            : shortenAddress(tx.counterparty_address, 6)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs muted">{formatDate(tx.submitted_at)}</td>
+                      <td className="px-4 py-3">
+                        <a
+                          className="link font-mono text-xs"
+                          href={explorerUrl(tx.signature)}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                        >
+                          {shortenAddress(tx.signature, 6)}
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
 

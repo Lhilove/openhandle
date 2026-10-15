@@ -22,7 +22,13 @@ const (
 
 // Status is the chain status of a signature.
 type Status struct {
-	Found              bool
+	Found bool
+	// Unavailable reports that the endpoint did not answer this entry (a
+	// transport failure, a rejected credential, a short batch), so the status is
+	// *unknown* rather than "not found". The two must never be conflated: a
+	// signature the endpoint was never asked about proves nothing, while one the
+	// endpoint looked for and could not find is evidence about the chain.
+	Unavailable        bool
 	Slot               int64
 	Confirmations      *int64
 	ConfirmationStatus string
@@ -114,10 +120,19 @@ func (c *Client) call(ctx context.Context, method string, params []any) (json.Ra
 	return parsed.Result, nil
 }
 
+// Health performs a getHealth check and returns the reason it failed, if it
+// did. An unauthorized or rate-limited provider endpoint fails here with a
+// plain HTTP status (e.g. "rpc getHealth: http 401"), which is exactly what a
+// caller needs to tell "the chain has no such transaction" apart from "we never
+// managed to ask".
+func (c *Client) Health(ctx context.Context) error {
+	_, err := c.call(ctx, "getHealth", []any{})
+	return err
+}
+
 // Healthy performs a getHealth check.
 func (c *Client) Healthy(ctx context.Context) bool {
-	_, err := c.call(ctx, "getHealth", []any{})
-	return err == nil
+	return c.Health(ctx) == nil
 }
 
 // GetSignatureStatuses returns the chain status of up to a batch of signatures.
@@ -142,7 +157,14 @@ func (c *Client) GetSignatureStatuses(ctx context.Context, signatures []string) 
 	}
 	out := make([]Status, len(signatures))
 	for i := range signatures {
-		if i >= len(wrap.Value) || wrap.Value[i] == nil {
+		if i >= len(wrap.Value) {
+			// A short batch is not an answer for the missing entries: mark them
+			// unknown instead of missing.
+			out[i] = Status{Unavailable: true}
+			continue
+		}
+		if wrap.Value[i] == nil {
+			// The endpoint looked and did not find it.
 			out[i] = Status{Found: false}
 			continue
 		}

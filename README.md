@@ -174,7 +174,7 @@ Full walkthrough, configuration reference and troubleshooting:
 | Public profile `/@handle` | ✅ Working | public fields only; private → 404 |
 | Wallet ownership challenge | ✅ Working | single-use, domain-bound, ed25519 |
 | Native SOL transfer | ✅ Working | signed in the user's wallet; verified on-chain |
-| Transaction history | ✅ Working | OpenHandle-submitted transactions only |
+| Transaction history | ✅ Working | sent and received through OpenHandle |
 | Account deletion | ✅ Working | data scrubbed, handle released |
 | Social identity (GitHub OAuth) | ⚠️ Needs credentials | disabled → "Not configured" until configured |
 | Production deployment | ✅ Scripted and verified | compose + Caddy + TLS, see docs/DEPLOYMENT.md |
@@ -189,8 +189,13 @@ Full walkthrough, configuration reference and troubleshooting:
   `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` are set. It has **not been exercised
   end-to-end** in this environment (no credentials), so treat it as unverified.
 - **Handles are immutable.** There is no rename flow in this release.
-- **History scope.** Only transactions submitted through OpenHandle appear.
-  It is not a full view of a wallet's on-chain activity.
+- **History scope.** Payments sent *and* received through OpenHandle appear, on
+  one timeline (each row carries its direction). A transfer made outside
+  OpenHandle does not, so it is not a full view of a wallet's on-chain activity.
+- **Confirmation needs a working RPC endpoint.** `GET /readyz` reports
+  `"rpc": false` when the configured provider cannot be reached. Nothing is
+  confirmed while that is the case, and nothing is mislabelled either: a payment
+  stays `submitted` rather than being declared failed or never-sent.
 - **Balance is not shown**, by design, rather than showing an unverified zero.
 - **Rate limiting is per process.** A multi-instance deployment needs a shared
   store (Redis, etc.). Behind an edge proxy, limits are only as trustworthy as

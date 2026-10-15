@@ -121,7 +121,10 @@ export default function Docs() {
           </p>
         </Endpoint>
         <Endpoint method="GET" path="/api/v1/me/transactions?limit=&offset=">
-          <p>Paginated history of transactions submitted through OpenHandle only.</p>
+          <p>
+            Paginated timeline of the payments you sent and the payments made to you through
+            OpenHandle. Each row carries its direction and the counterparty.
+          </p>
         </Endpoint>
       </section>
 
@@ -143,8 +146,10 @@ export default function Docs() {
       <section className="mt-8">
         <h2 className="h2 text-xl">History scope</h2>
         <p className="mt-2 text-sm muted">
-          The history endpoint lists only transactions submitted through OpenHandle. It is not an
-          exhaustive view of a wallet's on-chain activity.
+          The history endpoint lists the payments you sent and the payments made to you through
+          OpenHandle — one record per payment, which both sides read, so sender and recipient never
+          disagree about its status. It is not an exhaustive view of a wallet's on-chain activity:
+          a transfer made outside OpenHandle does not appear.
         </p>
       </section>
     </div>

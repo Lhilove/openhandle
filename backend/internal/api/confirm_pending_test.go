@@ -27,6 +27,11 @@ type fakeTx struct {
 type fakeChain struct {
 	mu   sync.Mutex
 	seen map[string]fakeTx
+	// failTxLookup makes getTransaction fail while the status index keeps
+	// answering -- what a provider does when it rate-limits one method and not
+	// another. Nothing can be concluded about a transaction from a lookup that
+	// never completed.
+	failTxLookup bool
 }
 
 func (f *fakeChain) land(signature, destination string, lamports, slot int64) {
@@ -78,6 +83,10 @@ func (f *fakeChain) handler() http.HandlerFunc {
 			writeRPC(w, map[string]any{"context": map[string]any{"slot": 1}, "value": values})
 
 		case "getTransaction":
+			if f.failTxLookup {
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+				return
+			}
 			var sig string
 			if len(req.Params) > 0 {
 				_ = json.Unmarshal(req.Params[0], &sig)
@@ -135,6 +144,28 @@ func newChainServer(t *testing.T, e *env, chain *fakeChain) *api.Server {
 	return api.NewServer(cfg, e.st, logger, rpc.New(ts.URL, "devnet"))
 }
 
+// newFailingRPCServer wires a Server against an endpoint that answers every
+// call with an authorization failure -- what a provider does when its API key
+// is missing, expired or rejected. Nothing about the chain can be learned from
+// it, so nothing about the chain may be concluded from it.
+func newFailingRPCServer(t *testing.T, e *env) *api.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("Unauthorized"))
+	}))
+	t.Cleanup(ts.Close)
+	cfg := &config.Config{
+		Env:           "test",
+		SessionSecret: "test-secret-test-secret-test-secret-0000",
+		SolanaCluster: "devnet",
+		SolanaRPCURL:  ts.URL,
+		LogLevel:      "error",
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return api.NewServer(cfg, e.st, logger, rpc.New(ts.URL, "devnet"))
+}
+
 func seedTransaction(t *testing.T, e *env, signature, destination, age string) {
 	t.Helper()
 	_, err := e.st.Pool.Exec(t.Context(),
@@ -180,6 +211,76 @@ func TestConfirmPendingDeclaresDroppedTransactionNotSent(t *testing.T) {
 	}
 	if status, _ := loadTxStatus(t, e, young); status != "submitted" {
 		t.Fatalf("a just-submitted transaction must stay pending, got %q", status)
+	}
+}
+
+// An endpoint that cannot answer says nothing about the transaction. A rejected
+// credential once turned a payment that had already finalized into "Not sent",
+// telling the sender their money had never left the wallet: the worst possible
+// lie. Past the blockhash window the record must stay pending until the chain
+// itself is actually asked, however long that takes.
+func TestConfirmPendingKeepsRecordPendingWhenRPCCannotAnswer(t *testing.T) {
+	e := newEnv(t)
+	srv := newFailingRPCServer(t, e)
+
+	const sig = "5unauthorizedSignatureForConfirmPendingTest1111111"
+	const dest = "BGN4PHEuETe1ZKKsMPumALst8o3ZFibMw8TCwxcKcpKV"
+	seedTransaction(t, e, sig, dest, "10 minutes")
+
+	// Several ticks: the verdict must not drift towards "expired" the longer the
+	// endpoint stays unreachable either.
+	for i := 0; i < 3; i++ {
+		srv.ConfirmPending(t.Context())
+		if status, _ := loadTxStatus(t, e, sig); status != "submitted" {
+			t.Fatalf("an unreachable endpoint must leave the record pending, got %q after %d checks", status, i+1)
+		}
+	}
+
+	// The endpoint recovers and the transfer is there: it is confirmed, and the
+	// record was never wrong in between.
+	chain := &fakeChain{seen: map[string]fakeTx{}}
+	chain.land(sig, dest, 10000000, 4242)
+	recovered := newChainServer(t, e, chain)
+	recovered.ConfirmPending(t.Context())
+
+	if status, slot := loadTxStatus(t, e, sig); status != "confirmed" {
+		t.Fatalf("after the endpoint recovered the transaction should be confirmed, got %q", status)
+	} else if slot == nil || *slot != 4242 {
+		t.Fatalf("expected the on-chain slot 4242, got %v", slot)
+	}
+}
+
+// The status index can lag or omit a signature the ledger does contain, which is
+// why the worker asks the ledger directly before declaring a transfer lost. If
+// that lookup fails, the transfer is not lost -- it is unexamined. It must stay
+// pending: the old code discarded the error and reported the payment as "Not
+// sent" because a provider rate-limited one method.
+func TestConfirmPendingKeepsRecordPendingWhenChainLookupFails(t *testing.T) {
+	e := newEnv(t)
+	chain := &fakeChain{seen: map[string]fakeTx{}, failTxLookup: true}
+	srv := newChainServer(t, e, chain)
+
+	const sig = "5ratelimitedLookupForConfirmPendingTest11111111111"
+	const dest = "BGN4PHEuETe1ZKKsMPumALst8o3ZFibMw8TCwxcKcpKV"
+	seedTransaction(t, e, sig, dest, "10 minutes")
+
+	srv.ConfirmPending(t.Context())
+	if status, _ := loadTxStatus(t, e, sig); status != "submitted" {
+		t.Fatalf("a failed chain lookup must not become a verdict, got %q", status)
+	}
+
+	// The lookup recovers and the transfer is on the ledger: now, and only now,
+	// is there something to report.
+	chain.mu.Lock()
+	chain.failTxLookup = false
+	chain.seen[sig] = fakeTx{slot: 31337, destination: dest, lamports: 10000000}
+	chain.mu.Unlock()
+
+	srv.ConfirmPending(t.Context())
+	if status, slot := loadTxStatus(t, e, sig); status != "confirmed" {
+		t.Fatalf("the transfer should be confirmed once it can be looked up, got %q", status)
+	} else if slot == nil || *slot != 31337 {
+		t.Fatalf("expected slot 31337, got %v", slot)
 	}
 }
 
